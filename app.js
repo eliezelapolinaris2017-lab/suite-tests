@@ -2274,7 +2274,18 @@ add=async function(c,data){
 };
 
 function authUI(){$('authIndustry').innerHTML=Object.entries(INDUSTRIES).map(([id,x])=>`<option value="${id}">${T(x.name)}</option>`).join('');$('showLogin').onclick=()=>{mode='login';document.querySelectorAll('.register-only').forEach(x=>x.classList.add('hidden'));$('authSubmit').textContent=T('Entrar');$('showLogin').classList.add('active');$('showRegister').classList.remove('active');};$('showRegister').onclick=()=>{mode='register';document.querySelectorAll('.register-only').forEach(x=>x.classList.remove('hidden'));$('authSubmit').textContent=T('Crear cuenta');$('showRegister').classList.add('active');$('showLogin').classList.remove('active');};$('authForm').onsubmit=async e=>{e.preventDefault();$('authMsg').textContent=T('Procesando...');try{if(mode==='register'){const cred=await createUserWithEmailAndPassword(auth,$('authEmail').value,$('authPassword').value);await setDoc(doc(db,'users',cred.user.uid),{...defaultProfile(),businessName:$('authBusiness').value||'Mi Negocio',industry:$('authIndustry').value,email:$('authEmail').value});}else await signInWithEmailAndPassword(auth,$('authEmail').value,$('authPassword').value);$('authMsg').textContent='';}catch(err){$('authMsg').textContent=err.message;}};}
-async function load(){unsub.forEach(x=>x());unsub=[];const snap=await getDoc(profRef());if(!snap.exists())await setDoc(profRef(),defaultProfile());unsub.push(onSnapshot(profRef(),s=>{state.profile=s.data()||defaultProfile();render();}));COLS.forEach(c=>unsub.push(onSnapshot(colPath(c),s=>{state[c]=s.docs.map(d=>({id:d.id,...d.data()}));$('syncStatus').textContent=T('Sincronizado');render();},e=>{$('syncStatus').textContent=T('Firebase bloqueado');console.error(e);})));}
+let portalSyncTimer=null;
+function scheduleEnabledPortalSync(){
+  clearTimeout(portalSyncTimer);
+  portalSyncTimer=setTimeout(async()=>{
+    const enabled=(state.clients||[]).filter(c=>c.portalEnabled&&c.portalToken);
+    for(const c of enabled){
+      try{await syncClientPortal(c.id,{openAfter:false,copyLink:false,notify:false});}
+      catch(e){console.warn('No se pudo sincronizar portal de '+(c.name||c.id),e);}
+    }
+  },1200);
+}
+async function load(){unsub.forEach(x=>x());unsub=[];const snap=await getDoc(profRef());if(!snap.exists())await setDoc(profRef(),defaultProfile());unsub.push(onSnapshot(profRef(),s=>{state.profile=s.data()||defaultProfile();render();}));COLS.forEach(c=>unsub.push(onSnapshot(colPath(c),s=>{state[c]=s.docs.map(d=>({id:d.id,...d.data()}));$('syncStatus').textContent=T('Sincronizado');render();if(['clients','services','quotes','followups','invoices','payments','assets'].includes(c))scheduleEnabledPortalSync();},e=>{$('syncStatus').textContent=T('Firebase bloqueado');console.error(e);})));}
 authUI();bindForms();onAuthStateChanged(auth,u=>{if(u){$('authScreen').classList.add('hidden');$('appShell').classList.remove('hidden');load();}else{$('authScreen').classList.remove('hidden');$('appShell').classList.add('hidden');}});
 
 /* V66 — Search Center por módulo
@@ -2601,7 +2612,7 @@ kpis=function(){
 /* V77 — Portal del Cliente
    Publica únicamente una copia sanitizada por cliente mediante un token privado. */
 function portalBaseUrl(){
-  const url=new URL('portal.html',window.location.href);
+  const url=new URL('./portal/',window.location.href);
   url.search=''; url.hash='';
   return url.toString();
 }
@@ -2624,9 +2635,14 @@ function portalServiceData(s){
   return {id:s.id,date:s.date||'',title:serviceTitle(s),status:s.status||'Pendiente',assetName:s.assetName||'',amount:Number(serviceAmount(s)||0),notes:s.notes||s.note||'',fields:Array.isArray(s.fields)?s.fields:[]};
 }
 function portalAssetData(a){
-  return {id:a.id,name:assetName(a),brand:a.brand||'',model:a.model||'',serial:a.serial||'',location:a.location||'',status:assetStatus(a),purchaseDate:a.purchaseDate||'',warrantyExpiration:a.warrantyExpiration||a.expirationDate||'',nextMaintenance:a.nextMaintenance||'',notes:a.notes||a.note||''};
+  return {id:a.id,name:assetName(a),brand:a.brand||'',model:a.model||'',serial:a.serial||'',location:a.location||'',status:assetStatus(a),purchaseDate:a.purchaseDate||'',warrantyExpiration:a.warrantyExpirationDate||a.warrantyExpiration||a.expirationDate||'',nextMaintenance:a.nextMaintenanceDate||a.nextMaintenance||'',notes:a.notes||a.note||''};
 }
-async function syncClientPortal(clientId,{openAfter=true}={}){
+function portalMaintenanceData(f){
+  const a=state.assets.find(x=>x.id===f.assetId)||{};
+  return {id:f.id,dueDate:f.dueDate||'',title:f.title||f.type||'Mantenimiento',type:f.type||'Mantenimiento',status:followupStatus(f),assetId:f.assetId||'',assetName:f.assetName||assetName(a)||'',priority:f.priority||'',note:f.note||''};
+}
+
+async function syncClientPortal(clientId,{openAfter=true,copyLink=true,notify=true}={}){
   const c=clientBy(clientId); if(!c.id){alert('Cliente no encontrado.');return;}
   const token=String(c.portalToken||'').trim()||newPortalToken();
   const p=profile();
@@ -2638,15 +2654,18 @@ async function syncClientPortal(clientId,{openAfter=true}={}){
     quotes:state.quotes.filter(x=>x.clientId===c.id).map(portalQuoteData).sort((a,b)=>String(b.date).localeCompare(String(a.date))),
     invoices:state.invoices.filter(x=>x.clientId===c.id).map(portalInvoiceData).sort((a,b)=>String(b.date).localeCompare(String(a.date))),
     services:state.services.filter(x=>x.clientId===c.id).map(portalServiceData).sort((a,b)=>String(b.date).localeCompare(String(a.date))),
-    assets:state.assets.filter(x=>x.clientId===c.id).map(portalAssetData)
+    assets:state.assets.filter(x=>x.clientId===c.id).map(portalAssetData),
+    maintenance:state.followups.filter(x=>x.clientId===c.id && String(x.type||'').toLowerCase().includes('mantenimiento') && followupStatus(x)!=='Cancelado').map(portalMaintenanceData).sort((a,b)=>String(a.dueDate).localeCompare(String(b.dueDate)))
   };
   await setDoc(doc(db,'clientPortals',token),payload,{merge:false});
   if(c.portalToken!==token || !c.portalEnabled) await updateDoc(docPath('clients',c.id),{portalToken:token,portalEnabled:true,portalUpdatedAt:new Date().toISOString()});
   const link=portalBaseUrl()+'?access='+encodeURIComponent(token);
-  const copied=await copyPortalLink(link);
+  const copied=copyLink?await copyPortalLink(link):false;
   if(openAfter) window.open(link,'_blank','noopener');
-  if(copied) alert('Portal actualizado. El enlace privado fue copiado.');
-  else window.prompt('Portal actualizado. Safari no permitió copiar automáticamente. Copia este enlace:',link);
+  if(notify&&copyLink){
+    if(copied) alert('Portal actualizado. El enlace privado fue copiado.');
+    else window.prompt('Portal actualizado. Safari no permitió copiar automáticamente. Copia este enlace:',link);
+  }
   return link;
 }
 async function copyPortalLink(link){
