@@ -2507,6 +2507,62 @@ function v66RenderBilling(){
     table(['Fecha','Número','Cliente','Servicio','Estado','Total','Pagado','Balance','Acción'],rows.map(inv=>`<tr><td>${esc(inv.date||'')}<br><span class="muted">Vence: ${esc(inv.dueDate||'')}</span></td><td><b>${esc(inv.number||'')}</b></td><td>${esc(inv.clientName||'')}</td><td>${esc(inv.serviceTitle||inv.serviceType||'')}</td><td>${statusChip(invoiceStatus(inv))}</td><td>${money(inv.total)}</td><td>${money(invoicePaid(inv.id))}</td><td><b>${money(invoiceBalance(inv))}</b></td><td><div class="actions"><button data-preview-invoice="${inv.id}" type="button">Ver</button><button data-dup-invoice="${inv.id}" type="button">Duplicar</button>${action('invoices',inv.id)}</div></td></tr>`));
   v66BindToolbar('billing');
 }
+
+function cashWeekBounds(reference=new Date()){
+  const d=new Date(reference); d.setHours(0,0,0,0);
+  const day=(d.getDay()+6)%7;
+  const start=new Date(d); start.setDate(d.getDate()-day);
+  const end=new Date(start); end.setDate(start.getDate()+6);
+  const iso=x=>`${x.getFullYear()}-${String(x.getMonth()+1).padStart(2,'0')}-${String(x.getDate()).padStart(2,'0')}`;
+  return {start:iso(start),end:iso(end),startDate:start,endDate:end};
+}
+function cashSigned(x){return (String(x.type||'').toLowerCase()==='gasto'?-1:1)*Number(x.amount||0);}
+function cashCurrentBalance(){return state.cashflow.reduce((a,x)=>a+cashSigned(x),0);}
+function cashWeekData(){
+  const b=cashWeekBounds();
+  const inRange=x=>String(x.date||'')>=b.start&&String(x.date||'')<=b.end;
+  const moves=state.cashflow.filter(inRange);
+  const income=moves.filter(x=>String(x.type||'').toLowerCase()!=='gasto').reduce((a,x)=>a+Number(x.amount||0),0);
+  const expenses=moves.filter(x=>String(x.type||'').toLowerCase()==='gasto').reduce((a,x)=>a+Number(x.amount||0),0);
+  const purchases=state.purchases.filter(inRange).reduce((a,x)=>a+Number(x.total||0),0);
+  const collected=state.payments.filter(inRange).reduce((a,x)=>a+Number(x.amount||0),0);
+  const prior=state.cashflow.filter(x=>String(x.date||'')<b.start).reduce((a,x)=>a+cashSigned(x),0);
+  const days=[];
+  for(let i=0;i<7;i++){
+    const d=new Date(b.startDate); d.setDate(d.getDate()+i);
+    const key=`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
+    const dm=moves.filter(x=>String(x.date||'')===key);
+    const di=dm.filter(x=>String(x.type||'').toLowerCase()!=='gasto').reduce((a,x)=>a+Number(x.amount||0),0);
+    const de=dm.filter(x=>String(x.type||'').toLowerCase()==='gasto').reduce((a,x)=>a+Number(x.amount||0),0);
+    const dc=state.payments.filter(x=>String(x.date||'')===key).reduce((a,x)=>a+Number(x.amount||0),0);
+    const dp=state.purchases.filter(x=>String(x.date||'')===key).reduce((a,x)=>a+Number(x.total||0),0);
+    days.push({date:key,label:d.toLocaleDateString('es-PR',{weekday:'short',day:'numeric'}),income:di,expenses:de,collected:dc,purchases:dp,net:di-de});
+  }
+  return {...b,moves,income,expenses,purchases,collected,prior,weekNet:income-expenses,current:cashCurrentBalance(),days};
+}
+function renderCashflowModule(){
+  const box=$('cashTable'); if(!box)return;
+  const w=cashWeekData();
+  const filtered=v66ApplyModuleFilter(state.cashflow,'cashflow');
+  const sorted=[...filtered].sort((a,b)=>String(b.date||'').localeCompare(String(a.date||'')));
+  let running=cashCurrentBalance();
+  const rowMap=new Map(sorted.map(x=>{const row={...x,running};running-=cashSigned(x);return [x.id,row];}));
+  const dayRows=w.days.map(d=>`<tr><td><b>${esc(d.label)}</b><br><span class="muted">${esc(d.date)}</span></td><td>${money(d.collected)}</td><td>${money(d.purchases)}</td><td>${money(d.expenses)}</td><td><b class="${d.net<0?'cash-negative':'cash-positive'}">${money(d.net)}</b></td></tr>`).join('');
+  box.innerHTML=`
+    <div class="cash-week-header"><div><h3>Balance semanal de caja</h3><p>${esc(w.start)} al ${esc(w.end)}</p></div><span class="cash-current-badge">Disponible ahora: <b>${money(w.current)}</b></span></div>
+    <div class="cash-metrics">
+      <div class="metric-card"><span>Cobrado esta semana</span><b class="viz-stat-value">${money(w.collected)}</b><small>Pagos realmente registrados</small></div>
+      <div class="metric-card"><span>Entradas a caja</span><b class="viz-stat-value">${money(w.income)}</b><small>Ingresos efectivos</small></div>
+      <div class="metric-card"><span>Salidas de caja</span><b class="viz-stat-value">${money(w.expenses)}</b><small>Compras y pagos efectuados</small></div>
+      <div class="metric-card"><span>Neto semanal</span><b class="viz-stat-value ${w.weekNet<0?'cash-negative':'cash-positive'}">${money(w.weekNet)}</b><small>Entradas menos salidas</small></div>
+      <div class="metric-card"><span>Compras registradas</span><b class="viz-stat-value">${money(w.purchases)}</b><small>Incluye compras aún no pagadas</small></div>
+      <div class="metric-card"><span>Balance al iniciar semana</span><b class="viz-stat-value">${money(w.prior)}</b><small>Saldo acumulado anterior</small></div>
+    </div>
+    <div class="cash-daily"><div class="section-head"><h3>Movimiento diario</h3><span class="limit-chip">Semana actual</span></div>${table(['Día','Cobrado','Compras registradas','Salidas reales','Neto real'],dayRows)}</div>
+    ${v66Toolbar('cashflow','Buscar flujo de caja','Concepto, tipo, fecha, monto...',state.cashflow,{dates:true,status:true})}
+    ${table(['Fecha','Tipo','Concepto','Monto','Balance luego del movimiento','Acción'],sorted.map(x=>{const r=rowMap.get(x.id)||x;return `<tr><td>${esc(x.date)}</td><td>${statusChip(x.type||'Ingreso')}</td><td>${esc(x.concept)}</td><td>${money(x.amount)}</td><td><b>${money(r.running)}</b></td><td>${action('cashflow',x.id)}</td></tr>`;}))}`;
+  v66BindToolbar('cashflow');
+}
 function v66RenderSimpleTables(){
   const render=(boxId,module,label,placeholder,head,rowFn,rows,opts)=>{const box=$(boxId); if(!box)return; const filtered=v66ApplyModuleFilter(rows,module); box.innerHTML=v66Toolbar(module,label,placeholder,rows,opts)+table(head,filtered.map(rowFn)); v66BindToolbar(module);};
   render('assetsTable','assets','Buscar activos','Cliente, nombre, marca, modelo, serial, ubicación, estado o fecha...', ['Cliente','Activo / Identificación','Ubicación','Fechas importantes','Estado','Valor','Acción'], a=>{const due=a.nextMaintenanceDate||a.warrantyExpirationDate||a.expirationDate||'';const overdue=due&&due<today();const soon=due&&!overdue&&due<=plusDays(30);return `<tr><td>${esc(a.clientName||'Sin cliente')}</td><td><b>${esc(assetName(a))}</b><br><span class="muted">${esc([a.brand,a.model].filter(Boolean).join(' · ')||'Sin marca/modelo')}</span><br><span class="muted">${a.serial?'Serial: '+esc(a.serial):'Sin serial'}</span></td><td>${esc(assetLocation(a)||'—')}</td><td><small>Compra: ${esc(a.purchaseDate||'—')}</small><br><small>Garantía: ${esc(a.warrantyExpirationDate||'—')}</small><br><small class="${overdue?'date-overdue':soon?'date-soon':''}">Próx. mantenimiento: ${esc(a.nextMaintenanceDate||'—')}</small></td><td>${statusChip(assetStatus(a))}</td><td>${money(a.value)}</td><td>${action('assets',a.id)}</td></tr>`;}, state.assets,{dates:true,status:true});
@@ -2514,7 +2570,7 @@ function v66RenderSimpleTables(){
   render('suppliersTable','suppliers','Buscar suplidores','Nombre, contacto, teléfono, categoría...', ['Suplidor','Contacto','Categoría','Crédito','Balance','Acción'], s=>`<tr><td><b>${esc(s.name)}</b><br><span class="muted">${esc(s.email||'')}</span></td><td>${esc(s.phone)}<br>${esc(s.contact||'')}</td><td>${esc(s.category||'')}</td><td>${money(s.creditLimit)}</td><td><b>${money(supplierBalance(s.id))}</b></td><td>${action('suppliers',s.id)}</td></tr>`, state.suppliers,{dates:false,status:false});
   render('purchasesTable','purchases','Buscar compras / CxP','Suplidor, referencia, concepto, estado, fecha...', ['Fecha','Suplidor','Concepto','Vence','Total','Pagado','Balance','Estado','Acción'], p=>`<tr><td>${esc(p.date)}</td><td>${esc(p.supplierName)}</td><td><b>${esc(p.number||p.reference||'')}</b><br><span class="muted">${esc(p.concept)}</span></td><td>${esc(p.dueDate||'—')}</td><td>${money(p.total)}</td><td>${money(purchasePaid(p.id))}</td><td><b>${money(purchaseBalance(p))}</b></td><td>${statusChip(purchaseStatus(p))}</td><td>${action('purchases',p.id)}</td></tr>`, state.purchases,{dates:true,status:true});
   render('paymentsTable','payments','Buscar cobros','Factura, método, nota, fecha, monto...', ['Fecha','Factura','Método','Monto','Balance factura','Nota','Acción'], p=>{const inv=state.invoices.find(x=>x.id===p.invoiceId)||{};return `<tr><td>${esc(p.date)}</td><td>${esc(p.invoiceNumber)}</td><td>${esc(p.method)}</td><td>${money(p.amount)}</td><td>${inv.id?money(invoiceBalance(inv)):'—'}</td><td>${esc(p.note)}</td><td>${action('payments',p.id)}</td></tr>`;}, state.payments,{dates:true,status:false});
-  render('cashTable','cashflow','Buscar flujo de caja','Concepto, tipo, fecha, monto...', ['Fecha','Tipo','Concepto','Monto','Balance','Acción'], x=>`<tr><td>${esc(x.date)}</td><td>${esc(x.type)}</td><td>${esc(x.concept)}</td><td>${money(x.amount)}</td><td>—</td><td>${action('cashflow',x.id)}</td></tr>`, state.cashflow,{dates:true,status:true});
+  renderCashflowModule();
   render('supplierPaymentsTable','supplierPayments','Buscar pagos a suplidores','Suplidor, compra, método, fecha...', ['Fecha','Suplidor','Compra','Método','Monto','Nota','Acción'], p=>`<tr><td>${esc(p.date)}</td><td>${esc(p.supplierName)}</td><td>${esc(p.purchaseNumber||'General')}</td><td>${esc(p.method)}</td><td>${money(p.amount)}</td><td>${esc(p.note)}</td><td>${action('supplierPayments',p.id)}</td></tr>`, state.supplierPayments,{dates:true,status:false});
   render('payrollTable','payroll','Buscar nómina','Empleado, periodo, método, fecha...', ['Fecha','Empleado','Periodo','Bruto','Deducciones','Neto','Acción'], p=>`<tr><td>${esc(p.date)}</td><td>${esc(p.teamName)}</td><td>${esc(p.period||'')}</td><td>${money(p.gross)}</td><td>${money(p.totalDeductions)}</td><td><b>${money(p.net)}</b></td><td><div class="actions"><button data-paystub="${p.id}" type="button">PDF</button>${action('payroll',p.id)}</div></td></tr>`, state.payroll,{dates:true,status:false});
 }
