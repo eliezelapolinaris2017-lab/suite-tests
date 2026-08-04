@@ -583,10 +583,6 @@ button.mini{padding:8px 10px;min-height:38px}
 .alert-item,.list-item{padding:11px 12px;border:1px solid var(--line);border-radius:14px;background:#fff;margin-bottom:8px}
 .tag{display:inline-flex;align-items:center;width:max-content;margin:3px 4px 0 0;padding:4px 8px;border-radius:999px;background:#eef4ff;color:var(--brand);font-size:11px;font-weight:900}
 .status-chip{display:inline-flex;padding:5px 9px;border-radius:999px;background:#f1f5f9;border:1px solid var(--line);font-weight:800;font-size:12px}
-.quick-template-bar{grid-column:1 / -1;border:1px solid var(--line);border-radius:18px;background:#f8fbff;padding:14px}
-.quick-template-bar label{display:block;margin-bottom:8px}
-.quick-template-bar div{display:flex;gap:8px;flex-wrap:wrap}
-.quick-template-bar button{padding:9px 12px}
 
 /* v30 Fase 2 Finanzas */
 .status-pagada{background:#dcfce7!important;color:#166534!important;border-color:#86efac!important;}
@@ -955,16 +951,6 @@ th{position:sticky;top:0;z-index:2;background:#f8fafc}td,th{padding:10px 11px}td
 
 
 /* Biblioteca de Plantillas Rápidas - base funcional */
-.quick-template-heading{display:flex!important;align-items:center;justify-content:space-between;gap:12px;margin-bottom:12px}
-.quick-template-heading label{margin:0;font-weight:800}
-.quick-template-heading small{display:block;margin-top:3px}
-.quick-template-tools{display:grid!important;grid-template-columns:minmax(180px,1.4fr) minmax(160px,.8fr) auto;gap:10px!important;align-items:center;margin-bottom:12px}
-.quick-template-tools input,.quick-template-tools select{width:100%}
-.template-favorite-filter{display:flex!important;align-items:center;gap:7px;white-space:nowrap;margin:0!important}
-.quick-template-buttons{display:grid!important;grid-template-columns:repeat(auto-fill,minmax(175px,1fr));gap:9px!important;margin-bottom:10px}
-.quick-template-button{text-align:left;display:flex!important;flex-direction:column;align-items:flex-start;gap:3px;min-height:58px}
-.quick-template-button span{font-weight:800}
-.quick-template-button small{font-size:11px;color:var(--muted)}
 .template-manager-panel{width:min(1120px,96vw);max-height:92vh;overflow:auto}
 .template-manager-actions{display:flex;gap:9px;flex-wrap:wrap;margin:12px 0 16px}
 .template-import-label{display:inline-flex;align-items:center;justify-content:center;cursor:pointer}
