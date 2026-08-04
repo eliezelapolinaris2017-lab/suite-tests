@@ -1138,12 +1138,40 @@ function filteredBillingInvoices(){
     return hay.includes(q);
   }).sort((a,b)=>String(b.date||'').localeCompare(String(a.date||'')) || String(b.number||'').localeCompare(String(a.number||'')));
 }
+async function registerInvoicePayment(invoiceId,date,method,amount,note=''){
+  const inv=state.invoices.find(x=>x.id===invoiceId);
+  if(!inv) throw new Error('Factura no encontrada.');
+  if(invoiceStatus(inv)==='Cancelada') throw new Error('No se puede cobrar una factura cancelada.');
+  const value=Number(amount||0);
+  if(value<=0) throw new Error('Monto inválido.');
+  const bal=invoiceBalance(inv);
+  if(value>bal+0.01 && !confirm('El cobro excede el balance. ¿Registrar de todos modos?')) return false;
+  await add('payments',{invoiceId:inv.id,invoiceNumber:inv.number,date:date||today(),method,amount:value,note});
+  await add('cashflow',{date:date||today(),type:'Ingreso',concept:`Cobro ${inv.number}`,amount:value});
+  const newBal=Math.max(0,bal-value);
+  await updateDoc(docPath('invoices',inv.id),{status:newBal<=0?'Pagada':'Parcial',paymentMethod:method,updatedAt:serverTimestamp()});
+  return true;
+}
+function billingPaymentPanel(){
+  const inv=state.invoices.find(x=>x.id===state.billingPaymentInvoiceId);
+  const historyInv=state.invoices.find(x=>x.id===state.billingHistoryInvoiceId);
+  let html='';
+  if(inv){
+    const balance=invoiceBalance(inv);
+    html+=`<div class="card-lite billing-payment-panel"><div class="section-head"><div><h3>Registrar cobro</h3><small class="muted">${esc(inv.number)} · ${esc(inv.clientName)} · Balance ${money(balance)}</small></div><button id="closeBillingPayment" type="button">Cerrar</button></div><form id="billingPaymentForm" class="form-grid">${input('Fecha','bpDate','date',today())}${select('Método','bpMethod',['ATH Móvil','Stripe','PayPal','Transferencia','Cheque','Efectivo','Tarjeta'].map(x=>({value:x,label:x})))}${input('Monto','bpAmount','number',String(balance))}${input('Nota','bpNote','text','','wide')}<button class="primary" type="submit">Registrar cobro</button></form></div>`;
+  }
+  if(historyInv){
+    const rows=(state.payments||[]).filter(p=>p.invoiceId===historyInv.id).sort((a,b)=>String(b.date||'').localeCompare(String(a.date||'')));
+    html+=`<div class="card-lite billing-history-panel"><div class="section-head"><div><h3>Historial de pagos</h3><small class="muted">${esc(historyInv.number)} · Pagado ${money(invoicePaid(historyInv))} · Balance ${money(invoiceBalance(historyInv))}</small></div><button id="closeBillingHistory" type="button">Cerrar</button></div>${rows.length?table(['Fecha','Método','Monto','Nota','Acción'],rows.map(p=>`<tr><td>${esc(p.date)}</td><td>${esc(p.method)}</td><td>${money(p.amount)}</td><td>${esc(p.note||'')}</td><td>${action('payments',p.id)}</td></tr>`)):'<p class="muted">Esta factura todavía no tiene pagos registrados.</p>'}</div>`;
+  }
+  return html;
+}
 function renderBillingTable(){
   const box=$('invoiceTable'); if(!box) return;
   const rows=filteredBillingInvoices();
   const allCount=(state.invoices||[]).length;
   const receivableTotal=rows.reduce((a,inv)=>a+invoiceBalance(inv),0);
-  box.innerHTML=`<div class="billing-tools card-lite">
+  box.innerHTML=billingPaymentPanel()+`<div class="billing-tools card-lite">
     <div class="toolbar">
       <input id="billingSearch" type="search" placeholder="Buscar por cliente, número de factura o servicio..." value="${esc(state.billingSearch||'')}">
       <select id="billingFilter">
@@ -1159,7 +1187,7 @@ function renderBillingTable(){
     </div>
     <small class="muted">Mostrando ${rows.length} de ${allCount} facturas · Balance filtrado ${money(receivableTotal)}</small>
   </div>`+
-  table(['Factura','Cliente','Vence','Total','Pagado','Balance','Estado','Acción'],rows.map(inv=>{const bal=invoiceBalance(inv),paid=invoicePaid(inv),st=invoiceStatus(inv);return `<tr><td><b>${esc(inv.number)}</b><br><span class="muted">${esc(inv.serviceTitle||'')}</span></td><td>${esc(inv.clientName)}</td><td>${esc(inv.dueDate||'—')}</td><td>${money(inv.total)}</td><td>${money(paid)}</td><td><b>${money(bal)}</b></td><td>${statusChip(st)}</td><td><div class="actions"><button data-prev-inv="${inv.id}" type="button">Preview</button><button data-dup-inv="${inv.id}" type="button">Duplicar</button>${st!=='Cancelada'?`<button class="danger" data-cancel-inv="${inv.id}" type="button">Cancelar</button>`:''}${action('invoices',inv.id)}</div></td></tr>`;}));
+  table(['Factura','Cliente','Vence','Total','Pagado','Balance','Estado','Acción'],rows.map(inv=>{const bal=invoiceBalance(inv),paid=invoicePaid(inv),st=invoiceStatus(inv);return `<tr><td><b>${esc(inv.number)}</b><br><span class="muted">${esc(inv.serviceTitle||'')}</span></td><td>${esc(inv.clientName)}</td><td>${esc(inv.dueDate||'—')}</td><td>${money(inv.total)}</td><td>${money(paid)}</td><td><b>${money(bal)}</b></td><td>${statusChip(st)}</td><td><div class="actions"><button data-prev-inv="${inv.id}" type="button">Preview</button>${st!=='Cancelada'&&bal>0?`<button class="primary" data-bill-pay="${inv.id}" type="button">Cobrar</button>`:''}<button data-bill-history="${inv.id}" type="button">Ver pagos</button><button data-dup-inv="${inv.id}" type="button">Duplicar</button>${st!=='Cancelada'?`<button class="danger" data-cancel-inv="${inv.id}" type="button">Cancelar</button>`:''}${action('invoices',inv.id)}</div></td></tr>`;}));
   const q=$('billingSearch'), f=$('billingFilter'), c=$('clearBillingFilter');
   if(q) q.oninput=()=>{state.billingSearch=q.value;renderBillingTable();setTimeout(()=>{$('billingSearch')?.focus(); const el=$('billingSearch'); if(el) el.setSelectionRange(el.value.length,el.value.length);},0);};
   if(f) f.onchange=()=>{state.billingFilter=f.value;renderBillingTable();};
@@ -1167,6 +1195,11 @@ function renderBillingTable(){
   document.querySelectorAll('[data-prev-inv]').forEach(b=>b.onclick=()=>previewInvoice(b.dataset.prevInv));
   document.querySelectorAll('[data-dup-inv]').forEach(b=>b.onclick=()=>duplicateInvoice(b.dataset.dupInv));
   document.querySelectorAll('[data-cancel-inv]').forEach(b=>b.onclick=()=>cancelInvoice(b.dataset.cancelInv));
+  document.querySelectorAll('[data-bill-pay]').forEach(b=>b.onclick=()=>{state.billingPaymentInvoiceId=b.dataset.billPay;state.billingHistoryInvoiceId='';renderBillingTable();});
+  document.querySelectorAll('[data-bill-history]').forEach(b=>b.onclick=()=>{state.billingHistoryInvoiceId=b.dataset.billHistory;state.billingPaymentInvoiceId='';renderBillingTable();});
+  if($('closeBillingPayment')) $('closeBillingPayment').onclick=()=>{state.billingPaymentInvoiceId='';renderBillingTable();};
+  if($('closeBillingHistory')) $('closeBillingHistory').onclick=()=>{state.billingHistoryInvoiceId='';renderBillingTable();};
+  if($('billingPaymentForm')) $('billingPaymentForm').onsubmit=async e=>{e.preventDefault();try{const ok=await registerInvoicePayment(state.billingPaymentInvoiceId,$('bpDate').value,$('bpMethod').value,$('bpAmount').value,$('bpNote').value);if(ok){state.billingPaymentInvoiceId='';renderBillingTable();}}catch(err){alert(err.message||err);}};
   document.querySelectorAll('[data-del]').forEach(b=>b.onclick=()=>remove(...b.dataset.del.split(':')));
   document.querySelectorAll('[data-edit]').forEach(b=>b.onclick=()=>editRecord(...b.dataset.edit.split(':')));
 }
@@ -1943,7 +1976,7 @@ function bindForms(){
   $('supplierPaymentForm').onsubmit=e=>{e.preventDefault();const s=supplierBy($('spSupplier').value);if(!s.id)return alert('Selecciona suplidor.');const pu=state.purchases.find(x=>x.id===($('spPurchase')?.value||''))||{};const amount=Number($('spAmount').value||0);add('supplierPayments',{supplierId:s.id,supplierName:s.name,purchaseId:pu.id||'',purchaseNumber:pu.number||pu.reference||'',date:$('spDate').value,method:$('spMethod').value,amount,note:$('spNote').value});add('cashflow',{date:$('spDate').value,type:'Gasto',concept:`Pago suplidor ${s.name}${pu.id?' · '+(pu.number||pu.concept):''}`,amount});e.target.reset();};
   $('payrollForm').onsubmit=async e=>{e.preventDefault();const t=teamBy($('prTeam').value);if(!t.id)return alert('Selecciona empleado/equipo.');const gross=Number($('prGross').value||0),bonus=Number($('prBonus')?.value||0),retention=Number($('prRetention')?.value||0),ded=Number($('prDeductions').value||0),adv=Number($('prAdvance')?.value||0),retType=$('prRetentionType')?.value||'Hacienda',retDest=$('prRetentionDest')?.value||'Departamento de Hacienda',retDue=$('prRetentionDue')?.value||plusDays(15),net=Math.max(0,gross+bonus-retention-ded-adv);const payrollRef=await add('payroll',{teamId:t.id,teamName:t.name,date:$('prDate').value,period:$('prPeriod').value,hours:Number($('prHours')?.value||0),overtime:Number($('prOvertime')?.value||0),gross,bonus,retention,retentionType:retType,retentionDestination:retDest,retentionDueDate:retDue,advance:adv,deductions:ded,totalDeductions:retention+ded+adv,net,method:$('prMethod').value,note:$('prNote').value});const payrollId=payrollRef?.id||'';if(retention>0){await add('payrollRetentions',{payrollId,teamId:t.id,teamName:t.name,date:$('prDate').value,type:retType,destination:retDest,amount:retention,status:'Pendiente',dueDate:retDue,note:$('prNote').value});}if(adv>0){await add('payrollRetentions',{payrollId,teamId:t.id,teamName:t.name,date:$('prDate').value,type:'Adelanto al empleado',destination:t.name,amount:adv,status:'Aplicada',dueDate:$('prDate').value,paidAt:$('prDate').value,note:'Adelanto descontado en nómina'});}if(ded>0){await add('payrollRetentions',{payrollId,teamId:t.id,teamName:t.name,date:$('prDate').value,type:'Descuento interno',destination:'Empresa',amount:ded,status:'Aplicada',dueDate:$('prDate').value,paidAt:$('prDate').value,note:'Descuento aplicado en nómina'});}await add('cashflow',{date:$('prDate').value,type:'Gasto',concept:`Nómina ${t.name}`,amount:net,note:`Bruto ${money(gross)} · Bonos ${money(bonus)} · Retenciones ${money(retention)} → ${retDest} · Adelantos ${money(adv)} · Otros descuentos ${money(ded)} · Neto ${money(net)}`});e.target.reset();};
   $('purchaseForm').onsubmit=e=>{e.preventDefault();const s=supplierBy($('puSupplier').value);if(!s.id)return alert('Selecciona suplidor.');const subtotal=Number($('puSubtotal').value||0),tax=Number($('puTax').value||0),total=subtotal+tax;add('purchases',{supplierId:s.id,supplierName:s.name,date:$('puDate').value,dueDate:$('puDue').value,concept:$('puConcept').value,reference:$('puRef').value,number:$('puRef').value||('PO-'+String(Date.now()).slice(-6)),subtotal,tax,total,status:$('puStatus').value,note:$('puNote').value});e.target.reset();};
-  $('paymentForm').onsubmit=async e=>{e.preventDefault();const inv=state.invoices.find(x=>x.id===$('pInvoice').value);if(!inv)return alert('Selecciona factura.');if(invoiceStatus(inv)==='Cancelada')return alert('No se puede cobrar una factura cancelada.');const amount=Number($('pAmount').value||0);if(amount<=0)return alert('Monto inválido.');const bal=invoiceBalance(inv);if(amount>bal+0.01 && !confirm('El cobro excede el balance. ¿Registrar de todos modos?')) return;const selectedMethod=$('pMethod').value;await add('payments',{invoiceId:inv.id,invoiceNumber:inv.number,date:$('pDate').value,method:selectedMethod,amount,note:$('pNote').value});await add('cashflow',{date:$('pDate').value,type:'Ingreso',concept:`Cobro ${inv.number}`,amount});const newBal=Math.max(0,bal-amount);await updateDoc(docPath('invoices',inv.id),{status:newBal<=0?'Pagada':amount>0?'Parcial':invoiceStatus(inv),paymentMethod:selectedMethod,updatedAt:serverTimestamp()});e.target.reset();};
+  $('paymentForm').onsubmit=async e=>{e.preventDefault();try{const ok=await registerInvoicePayment($('pInvoice').value,$('pDate').value,$('pMethod').value,$('pAmount').value,$('pNote').value);if(ok)e.target.reset();}catch(err){alert(err.message||err);}};
   $('cashForm').onsubmit=e=>{e.preventDefault();add('cashflow',{date:$('xDate').value,type:$('xType').value,concept:$('xConcept').value,amount:Number($('xAmount').value||0)});e.target.reset();};
   $('saveSettings').onclick=saveSettings;$('invoiceFromService').onclick=()=>{const s=state.services.find(s=>!state.invoices.some(i=>i.serviceId===s.id));if(s)createInvoice(s.id);else alert('No hay servicios pendientes de facturar.');};
   document.querySelectorAll('.report-option').forEach(b=>b.onclick=()=>selectReport(b.dataset.reportType));
